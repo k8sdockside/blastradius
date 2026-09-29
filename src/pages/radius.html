@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Blast radius</title>
+        <link rel="stylesheet" href="blastradius.css" />
+        <!-- The bridge to the app. Served by K8s Dockside itself, always at this path. -->
+        <script src="/plugin-ui/_sdk/k8sdockside.js"></script>
+    </head>
+    <body class="page">
+        <header class="top">
+            <div class="brand">
+                <span class="logo" id="logo"></span>
+                <div>
+                    <h1>Blast radius</h1>
+                    <p id="where" class="faint">Connecting…</p>
+                </div>
+            </div>
+            <div class="pick">
+                <label><span class="faint small">Kind</span><select id="kind" class="picker"></select></label>
+                <label id="ns-wrap"><span class="faint small">Namespace</span><select id="namespace" class="picker"></select></label>
+                <label><span class="faint small">Object</span><select id="name" class="picker wide"></select></label>
+                <button id="clear" type="button" class="ghost" title="Back to where it would hurt most">Hotspots</button>
+                <button id="refresh" type="button" class="ghost" title="Read the cluster again">Refresh</button>
+            </div>
+        </header>
+
+        <p id="error" class="banner error" role="alert" hidden></p>
+        <p id="missing" class="banner warn" hidden></p>
+
+        <main id="main">
+            <div class="loading"><span class="pulse"></span> Reading the cluster…</div>
+        </main>
+
+        <!-- A classic script, not a module: built from src/pages/radius.ts. -->
+        <script src="radius.js"></script>
+    </body>
+</html>

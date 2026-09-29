@@ -1,0 +1,58 @@
+{
+    "$schema": "https://raw.githubusercontent.com/k8sdockside/k8sdockside/main/docs/plugin.schema.json",
+    "id": "blastradius",
+    "name": "Blast radius",
+    "version": "0.1.0",
+    "minAppVersion": "0.1.1",
+    "tagline": "what fails if this goes away",
+    "category": "platform",
+    "icon": "alert",
+    "logo": "logo.svg",
+    "author": "K8s Dockside",
+    "links": [{ "label": "Source", "url": "https://github.com/k8sdockside/blastradius" }],
+    "description": "Pick a node, a volume, a ConfigMap, a Secret, a Service, a ServiceAccount or a workload, and see everything that fails if it goes away: which workloads go down, lose replicas, cannot come back or break the next time they restart, which Services lose their endpoints, and which Ingresses and HTTPRoutes stop answering. Drawn as a graph from the object to the front door.\n\nStart with Blast radius: with nothing picked it ranks every node, claim, ConfigMap, Secret, Service and StorageClass by how much would break without it. Nodes, claims, volumes, classes, ConfigMaps, Services, ServiceAccounts and workloads also get a Blast radius panel in their detail view.\n\nIt works on any cluster and only reads. Secrets are never read: their names come from the pods and Ingresses that use them.",
+    "requires": [
+        { "kind": "pods", "label": "Pods" },
+        { "kind": "nodes", "label": "Nodes" }
+    ],
+    "ui": {
+        "kinds": [
+            "replicasets",
+            "deployments",
+            "statefulsets",
+            "daemonsets",
+            "jobs",
+            "cronjobs",
+            "services",
+            "ingresses",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "storageclasses",
+            "configmaps",
+            "poddisruptionbudgets",
+            "serviceaccounts",
+            "crd:httproutes.gateway.networking.k8s.io"
+        ]
+    },
+    "views": [{ "id": "radius", "label": "Blast radius", "icon": "graph", "type": "custom", "entry": "radius.html" }],
+    "cards": [
+        {
+            "label": "Pods",
+            "kind": "pods",
+            "groupBy": "status.phase",
+            "tones": { "Running": "ok", "Succeeded": "info", "Pending": "warn", "Failed": "error", "Unknown": "warn" }
+        }
+    ],
+    "sections": [
+        { "id": "node", "label": "Blast radius", "kind": "nodes", "entry": "panel.html", "height": 220 },
+        { "id": "pvc", "label": "Blast radius", "kind": "persistentvolumeclaims", "entry": "panel.html", "height": 180 },
+        { "id": "pv", "label": "Blast radius", "kind": "persistentvolumes", "entry": "panel.html", "height": 180 },
+        { "id": "storageclass", "label": "Blast radius", "kind": "storageclasses", "entry": "panel.html", "height": 180 },
+        { "id": "configmap", "label": "Blast radius", "kind": "configmaps", "entry": "panel.html", "height": 180 },
+        { "id": "service", "label": "Blast radius", "kind": "services", "entry": "panel.html", "height": 180 },
+        { "id": "serviceaccount", "label": "Blast radius", "kind": "serviceaccounts", "entry": "panel.html", "height": 180 },
+        { "id": "deployment", "label": "Blast radius", "kind": "deployments", "entry": "panel.html", "height": 180 },
+        { "id": "statefulset", "label": "Blast radius", "kind": "statefulsets", "entry": "panel.html", "height": 180 },
+        { "id": "daemonset", "label": "Blast radius", "kind": "daemonsets", "entry": "panel.html", "height": 180 }
+    ]
+}
