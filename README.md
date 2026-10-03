@@ -3,7 +3,7 @@
 A [K8s Dockside](https://github.com/k8sdockside/k8sdockside) plugin: pick a
 Kubernetes object and see **what fails if it goes away**.
 
-- **Blast radius** (the view). Pick a Node, PVC, PV, StorageClass, ConfigMap,
+- **Blast radius** (the page the plugin opens on). Pick a Node, PVC, PV, StorageClass, ConfigMap,
   Secret, Service, ServiceAccount, Deployment, StatefulSet or DaemonSet. The
   page draws a graph from the object to the front door: object → claims →
   workloads → Services → Ingresses and HTTPRoutes. Each box is coloured by what

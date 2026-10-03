@@ -30,7 +30,13 @@
         <p id="missing" class="banner warn" hidden></p>
 
         <main id="main">
-            <div class="loading"><span class="pulse"></span> Reading the cluster…</div>
+            <div class="loading loading-radar">
+                <div class="radar-box idle" aria-hidden="true">
+                    <div class="sweep"></div>
+                    <svg class="radar" viewBox="-166 -122 332 244"><circle class="ring" r="96" /><circle class="ring" r="78" /><circle class="ring" r="56" /><circle class="ring" r="34" /><circle class="bullseye" r="10" /></svg>
+                </div>
+                <div><span class="pulse"></span> Reading the cluster and imagining each object gone…</div>
+            </div>
         </main>
 
         <!-- A classic script, not a module: built from src/pages/radius.ts. -->

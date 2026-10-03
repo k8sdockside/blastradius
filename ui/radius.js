@@ -419,7 +419,7 @@
         volumeHits(b, target2.name);
         break;
       case "storageclasses":
-        found = snap2.storageclasses.some((s) => s.metadata.name === target2.name);
+        found = snap2.storageclasses.some((s2) => s2.metadata.name === target2.name);
         classHits(b, target2.name);
         break;
       case "configmaps":
@@ -431,11 +431,11 @@
         referenceHits(b, "secret", target2);
         break;
       case "services":
-        found = snap2.services.some((s) => sameRef(s, target2));
+        found = snap2.services.some((s2) => sameRef(s2, target2));
         serviceHits(b, target2);
         break;
       case "serviceaccounts":
-        found = snap2.serviceaccounts.some((s) => sameRef(s, target2));
+        found = snap2.serviceaccounts.some((s2) => sameRef(s2, target2));
         accountHits(b, target2);
         break;
       case "deployments":
@@ -570,7 +570,7 @@
   }
   function classHits(b, className) {
     const snap2 = b.idx.snap;
-    const sc = snap2.storageclasses.find((s) => s.metadata.name === className);
+    const sc = snap2.storageclasses.find((s2) => s2.metadata.name === className);
     const isDefault = sc?.metadata.annotations?.["storageclass.kubernetes.io/is-default-class"] === "true";
     b.notes.push("Volumes already made keep working: a StorageClass is read when a volume is made or expanded, not while it is used.");
     if (isDefault) b.notes.push(`${className} is the default class: new claims that name no class would stay Pending too.`);
@@ -623,7 +623,7 @@
   }
   function serviceHits(b, target2) {
     const snap2 = b.idx.snap;
-    const svc = snap2.services.find((s) => sameRef(s, target2));
+    const svc = snap2.services.find((s2) => sameRef(s2, target2));
     b.notes.push(`Anything calling ${target2.name}.${target2.namespace} by name stops resolving. Nothing in the cluster records who does, so those callers are not shown.`);
     if (svc?.spec?.type === "LoadBalancer") b.notes.push("It is a LoadBalancer: its external address is given back, and may not be the same one if it is made again.");
     for (const sts of snap2.statefulsets) {
@@ -634,7 +634,7 @@
     }
   }
   function accountHits(b, target2) {
-    const sa = b.idx.snap.serviceaccounts.find((s) => sameRef(s, target2));
+    const sa = b.idx.snap.serviceaccounts.find((s2) => sameRef(s2, target2));
     for (const pod of b.idx.livePods) {
       if ((pod.metadata.namespace ?? "") !== target2.namespace) continue;
       if ((pod.spec?.serviceAccountName ?? "default") !== target2.name) continue;
@@ -815,6 +815,107 @@
     return out.sort((a, b) => b.score - a.score || a.target.id.localeCompare(b.target.id)).slice(0, limit);
   }
 
+  // src/model/overview.ts
+  var SURVEY_KINDS = ["nodes", "persistentvolumeclaims", "storageclasses", "configmaps", "secrets", "services"];
+  function consequences(impact) {
+    const out = { down: 0, stuck: 0, degraded: 0, restart: 0, info: 0 };
+    for (const n of impact.nodes) if (n.column >= 2) out[n.severity]++;
+    return out;
+  }
+  function stats(impacts) {
+    const workloads = /* @__PURE__ */ new Set();
+    const services = /* @__PURE__ */ new Set();
+    const entries = /* @__PURE__ */ new Set();
+    const bySeverity2 = { down: 0, stuck: 0, degraded: 0, restart: 0, info: 0 };
+    let spof = 0;
+    for (const impact of impacts) {
+      const sev = impact.verdict.severity;
+      if (sev) bySeverity2[sev]++;
+      let downstreamDown = false;
+      for (const n of impact.nodes) {
+        if (n.column === 2 && (n.severity === "down" || n.severity === "stuck")) workloads.add(n.id);
+        if (n.column === 3 && n.severity === "down") services.add(n.id);
+        if (n.column === 4 && n.severity === "down") entries.add(n.id);
+        if (n.column >= 2 && n.severity === "down") downstreamDown = true;
+      }
+      if (downstreamDown) spof++;
+    }
+    return {
+      risky: impacts.length,
+      spof,
+      workloadsAtRisk: workloads.size,
+      servicesAtRisk: services.size,
+      entriesAtRisk: entries.size,
+      bySeverity: bySeverity2
+    };
+  }
+  var RINGS = [
+    { severity: "down", inner: 0.1, outer: 0.34 },
+    { severity: "stuck", inner: 0.34, outer: 0.56 },
+    { severity: "degraded", inner: 0.56, outer: 0.78 },
+    { severity: "restart", inner: 0.78, outer: 0.96 }
+  ];
+  var TOP_GAP = 0.36;
+  function radarLayout(impacts, maxDots = 80) {
+    const shown = [...impacts].sort((a, b) => b.score - a.score || a.target.id.localeCompare(b.target.id)).slice(0, maxDots);
+    const order = (kind) => {
+      const i = SURVEY_KINDS.indexOf(kind);
+      return i < 0 ? SURVEY_KINDS.length : i;
+    };
+    const byKind = /* @__PURE__ */ new Map();
+    for (const impact of shown) {
+      const kind = impact.target.ref.kind;
+      const list = byKind.get(kind);
+      if (list) list.push(impact);
+      else byKind.set(kind, [impact]);
+    }
+    const kinds = [...byKind.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+    const total = shown.length;
+    const maxScore = Math.max(1, ...shown.map((i) => i.score));
+    const sectors = [];
+    const dots = [];
+    const minShare = kinds.length ? Math.min(1 / kinds.length, 0.08) : 0;
+    const raw = kinds.map((k) => Math.max(minShare, Math.sqrt(byKind.get(k).length / Math.max(1, total))));
+    const sum = raw.reduce((a, b) => a + b, 0) || 1;
+    const room = Math.PI * 2 - TOP_GAP;
+    let angle = TOP_GAP / 2;
+    kinds.forEach((kind, k) => {
+      const span = raw[k] / sum * room;
+      const list = byKind.get(kind);
+      sectors.push({ kind, start: angle, end: angle + span, count: list.length });
+      const pad = Math.min(span * 0.08, 0.06);
+      const usable = span - pad * 2;
+      const lanes = list.length > 5 ? 3 : 1;
+      list.forEach((impact, i) => {
+        const sev = ringOf(impact.verdict.severity);
+        const ring = RINGS.find((r) => r.severity === sev) ?? RINGS[RINGS.length - 1];
+        const depth = 1 - impact.score / maxScore;
+        const lane = lanes === 1 ? 0 : i % lanes - 1;
+        const t = clamp(0.5 + lane * 0.32 + (depth - 0.5) * (lanes === 1 ? 0.6 : 0.15), 0.1, 0.9);
+        const radius = ring.inner + (ring.outer - ring.inner) * t;
+        const a = angle + pad + (list.length === 1 ? usable / 2 : usable * (i + 0.5) / list.length);
+        dots.push({
+          id: impact.target.id,
+          ref: impact.target.ref,
+          severity: sev,
+          score: impact.score,
+          x: Math.sin(a) * radius,
+          y: -Math.cos(a) * radius,
+          size: 0.016 + 0.03 * Math.sqrt(impact.score / maxScore)
+        });
+      });
+      angle += span;
+    });
+    return { sectors, dots, hidden: Math.max(0, impacts.length - shown.length) };
+  }
+  function ringOf(sev) {
+    if (!sev || sev === "info") return "restart";
+    return SEVERITIES.includes(sev) ? sev : "restart";
+  }
+  function clamp(n, lo, hi) {
+    return Math.min(hi, Math.max(lo, n));
+  }
+
   // src/ui/common.ts
   function message(err) {
     return err instanceof Error ? err.message : String(err);
@@ -926,6 +1027,8 @@
   var pickNs = "";
   var stopResize = null;
   var showQuiet = false;
+  var survey = null;
+  var hotKind = "";
   var kindSel = byId("kind");
   var nsSel = byId("namespace");
   var nameSel = byId("name");
@@ -974,6 +1077,7 @@
       const loaded = await loadSnapshot();
       snap = loaded.snap;
       index = new Index(snap);
+      survey = null;
       clearError();
       const missing = byId("missing");
       missing.hidden = !loaded.missing.length;
@@ -1028,31 +1132,205 @@
     });
     replace(main, verdictCard(full), quiet ? toggle : null, graph(shown), notes(full), table(shown));
   }
+  var SVGNS = "http://www.w3.org/2000/svg";
+  function s(tag, attrs = {}, text) {
+    const node = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+    if (text !== void 0) node.textContent = text;
+    return node;
+  }
+  var R = 100;
   function renderHotspots() {
-    const top = hotspots(snap, 12);
-    replace(
-      main,
+    survey ??= hotspots(snap, Infinity);
+    const all = survey;
+    if (hotKind && !all.some((i) => i.target.ref.kind === hotKind)) hotKind = "";
+    const st = stats(all);
+    const radar = radarLayout(all);
+    const shown = all.filter((i) => !hotKind || i.target.ref.kind === hotKind).slice(0, 24);
+    const dots = /* @__PURE__ */ new Map();
+    const cards = /* @__PURE__ */ new Map();
+    const byTarget = new Map(all.map((i) => [i.target.id, i]));
+    const readout = el("div", { class: "readout" });
+    const idleReadout = () => replace(
+      readout,
+      el("div", { class: "readout-title" }, all.length ? "Pick a dot" : "All clear"),
+      el("div", { class: "dim small" }, all.length ? "Each dot is one object imagined gone. The nearer the bullseye and the bigger, the more breaks with it." : "No single node, claim, ConfigMap, Secret, Service or StorageClass takes anything down with it.")
+    );
+    const focus = (id) => {
+      for (const [key, g] of dots) g.classList.toggle("lit", key === id);
+      for (const [key, c2] of cards) c2.classList.toggle("lit", key === id);
+      radarBox.classList.toggle("focusing", id !== null && dots.has(id));
+      const impact = id ? byTarget.get(id) : void 0;
+      if (!impact) return idleReadout();
+      const c = consequences(impact);
+      replace(
+        readout,
+        el("div", { class: "readout-head" }, kindTag(impact.target.ref.kind), el("span", { class: `score sev-${impact.verdict.severity ?? "info"}` }, `impact ${impact.score}`)),
+        el("div", { class: "readout-title" }, refLabel(impact.target.ref)),
+        el("div", { class: "dim small" }, impact.verdict.text),
+        severityBar(c),
+        el("div", { class: "faint small" }, "Click to see the whole blast")
+      );
+    };
+    const chart = s("svg", { viewBox: `${-R * 1.66} ${-R * 1.22} ${R * 3.32} ${R * 2.44}`, class: "radar", role: "img" });
+    chart.append(s("title", {}, `Radar of ${all.length} objects whose loss would break something`));
+    for (const ring of [...RINGS].reverse()) {
+      chart.append(s("circle", { r: ring.outer * R, class: `ring sev-${ring.severity}` }));
+    }
+    chart.append(s("circle", { r: RINGS[0].inner * R, class: "bullseye" }));
+    for (const sector of radar.sectors) {
+      for (const a of sector === radar.sectors.at(-1) ? [sector.start, sector.end] : [sector.start]) {
+        const edge = polar(a, R * 0.98);
+        chart.append(s("line", { x1: 0, y1: 0, x2: edge.x, y2: edge.y, class: "spoke" }));
+      }
+      const mid = (sector.start + sector.end) / 2;
+      const at = polar(mid, R * 1.1);
+      const anchor = Math.abs(at.x) < R * 0.2 ? "middle" : at.x > 0 ? "start" : "end";
+      const label = s("text", { x: at.x, y: at.y, "text-anchor": anchor, "dominant-baseline": "middle", class: `sector-label${hotKind === sector.kind ? " on" : ""}` }, `${kindLabel(sector.kind)} · ${sector.count}`);
+      label.addEventListener("click", () => setHotKind(hotKind === sector.kind ? "" : sector.kind));
+      chart.append(label);
+    }
+    for (const ring of RINGS) {
+      chart.append(s("text", { x: 0, y: -ring.outer * R + 6.5, "text-anchor": "middle", class: "ring-label" }, SEVERITY_LABEL[ring.severity]));
+    }
+    for (const dot of radar.dots) chart.append(dotMark(dot, dots, focus));
+    if (!all.length) {
+      chart.classList.add("clear");
+      chart.append(s("path", { d: "M-9,0 L-3,6 L9,-6", class: "all-clear" }));
+    }
+    const radarBox = el("div", { class: "radar-box" }, el("div", { class: "sweep", "aria-hidden": "true" }));
+    radarBox.append(chart);
+    radarBox.addEventListener("mouseleave", () => focus(null));
+    const tiles = el(
+      "div",
+      { class: "tiles" },
+      tile(st.spof, "Single points of failure", "objects whose loss takes a workload, Service or entry point fully down"),
+      tile(st.workloadsAtRisk, "Workloads exposed", "go down or cannot come back after one loss"),
+      tile(st.servicesAtRisk, "Services exposed", "left with no endpoints after one loss"),
+      tile(st.entriesAtRisk, "Entry points exposed", "Ingresses and HTTPRoutes that stop answering")
+    );
+    const legend = el(
+      "div",
+      { class: "legend" },
+      el("div", { class: "faint small legend-title" }, `${all.length} ${all.length === 1 ? "object" : "objects"} would break something · worst loss`),
+      severityBar(st.bySeverity, true),
+      el("div", { class: "chips" }, ...SEVERITIES.filter((sv) => sv !== "info" && st.bySeverity[sv] > 0).map((sv) => chip(sv, `${st.bySeverity[sv]} · ${SEVERITY_LABEL[sv]}`)))
+    );
+    const steps = el(
+      "ol",
+      { class: "steps small" },
+      el("li", {}, el("b", {}, "Pick"), " a dot, a card, or any object in the pickers above"),
+      el("li", {}, el("b", {}, "See"), " what breaks, from the object to the front door"),
+      el("li", {}, el("b", {}, "Follow"), " the chain: anything it reaches can be the next target")
+    );
+    idleReadout();
+    const hero = el(
+      "section",
+      { class: "hero" },
+      el("div", { class: "hero-radar" }, radarBox, readout, radar.hidden ? el("div", { class: "faint small" }, `${radar.hidden} smaller ones are left off the radar.`) : null),
       el(
-        "section",
-        { class: "intro" },
-        el("h2", {}, "Where it would hurt most"),
-        el("p", { class: "dim" }, "Every node, claim, ConfigMap, Secret, Service and StorageClass, imagined gone one at a time, ranked by what would break. Pick one to see the whole blast, or choose any object above.")
-      ),
-      top.length ? el("div", { class: "hot-grid" }, ...top.map(hotCard)) : el("p", { class: "empty" }, "Nothing here would take anything else down with it.")
+        "div",
+        { class: "hero-side" },
+        el("div", {}, el("h2", {}, "Where it would hurt most"), el("p", { class: "dim intro-text" }, "Every node, claim, ConfigMap, Secret, Service and StorageClass, imagined gone one at a time.")),
+        tiles,
+        all.length ? legend : null,
+        steps
+      )
+    );
+    const counts = /* @__PURE__ */ new Map();
+    for (const i of all) counts.set(i.target.ref.kind, (counts.get(i.target.ref.kind) ?? 0) + 1);
+    const filter = el(
+      "div",
+      { class: "filter" },
+      filterChip("", `All · ${all.length}`),
+      ...SURVEY_KINDS.filter((k) => counts.has(k)).map((k) => filterChip(k, `${kindLabel(k)} · ${counts.get(k)}`))
+    );
+    const max = Math.max(1, ...all.map((i) => i.score));
+    const list = all.length ? el(
+      "section",
+      { class: "ranked" },
+      el("div", { class: "ranked-head" }, el("h3", {}, "Ranked by impact"), filter),
+      el("div", { class: "hot-grid" }, ...shown.map((impact) => hotCard(impact, all.indexOf(impact) + 1, max, cards, focus)))
+    ) : null;
+    replace(main, hero, list);
+  }
+  function setHotKind(kind) {
+    hotKind = kind;
+    renderHotspots();
+  }
+  function filterChip(kind, text) {
+    const b = button(text, () => setHotKind(kind), { class: `pill${hotKind === kind ? " on" : ""}` });
+    b.setAttribute("aria-pressed", String(hotKind === kind));
+    return b;
+  }
+  function polar(angle, radius) {
+    return { x: Math.sin(angle) * radius, y: -Math.cos(angle) * radius };
+  }
+  function dotMark(dot, dots, focus) {
+    const g = s("g", { class: `dot sev-${dot.severity}`, tabindex: 0, role: "button", transform: `translate(${(dot.x * R).toFixed(2)},${(dot.y * R).toFixed(2)})` });
+    g.setAttribute("aria-label", `${kindLabel(dot.ref.kind)} ${refLabel(dot.ref)}, impact ${dot.score}`);
+    g.append(s("title", {}, `${kindLabel(dot.ref.kind)} ${refLabel(dot.ref)} · impact ${dot.score}`));
+    const r = dot.size * R;
+    g.append(s("circle", { r: r * 1.9, class: "halo" }), s("circle", { r, class: "core" }));
+    g.addEventListener("mouseenter", () => focus(dot.id));
+    g.addEventListener("focus", () => focus(dot.id));
+    g.addEventListener("click", () => pick(dot.ref));
+    g.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        pick(dot.ref);
+      }
+    });
+    dots.set(dot.id, g);
+    return g;
+  }
+  function tile(n, label, hint) {
+    return el(
+      "div",
+      { class: `tile ${n ? "bad" : "good"}` },
+      el("div", { class: "tile-n" }, String(n)),
+      el("div", { class: "tile-label" }, label),
+      el("div", { class: "faint small" }, n ? hint : "none — nice")
     );
   }
-  function hotCard(impact) {
+  function severityBar(counts, tall = false) {
+    const parts = SEVERITIES.filter((sv) => sv !== "info" && counts[sv] > 0);
+    const bar = el("div", { class: `sevbar${tall ? " tall" : ""}` });
+    for (const sv of parts) {
+      const seg = el("span", { class: `sev-${sv}`, title: `${counts[sv]} · ${SEVERITY_LABEL[sv]}` });
+      seg.style.flexGrow = String(counts[sv]);
+      bar.append(seg);
+    }
+    if (!parts.length) bar.append(el("span", { class: "sev-info" }));
+    return bar;
+  }
+  function hotCard(impact, rank, max, cards, focus) {
     const t = impact.target;
-    const counts = SEVERITIES.filter((s) => s !== "info").map((s) => [s, impact.nodes.filter((n) => n.severity === s && n.column >= 2).length]).filter(([, n]) => n > 0);
+    const c = consequences(impact);
+    const counts = SEVERITIES.filter((sv) => sv !== "info" && c[sv] > 0);
+    const meter = el("div", { class: "meter", title: "How much would break, weighted by how badly" }, el("span", {}));
+    meter.firstChild.style.width = `${Math.max(4, impact.score / max * 100)}%`;
     const card = el(
       "button",
       { type: "button", class: `hot sev-${impact.verdict.severity ?? "info"}` },
-      el("div", { class: "hot-head" }, kindTag(t.ref.kind), el("span", { class: "score", title: "How much would break, weighted by how badly" }, String(impact.score))),
+      el(
+        "div",
+        { class: "hot-head" },
+        el("span", { class: "rank" }, `#${rank}`),
+        kindTag(t.ref.kind),
+        el("span", { class: "grow" }),
+        el("span", { class: "score", title: "How much would break, weighted by how badly" }, String(impact.score))
+      ),
       el("div", { class: "hot-name" }, refLabel(t.ref)),
+      meter,
       el("div", { class: "hot-text dim" }, impact.verdict.text),
-      el("div", { class: "chips" }, ...counts.map(([s, n]) => chip(s, `${n} · ${SEVERITY_LABEL[s]}`)))
+      counts.length ? severityBar(c) : null,
+      el("div", { class: "chips" }, ...counts.map((sv) => chip(sv, `${c[sv]} · ${SEVERITY_LABEL[sv]}`)))
     );
     card.addEventListener("click", () => pick(t.ref));
+    card.addEventListener("mouseenter", () => focus(t.id));
+    card.addEventListener("mouseleave", () => focus(null));
+    cards.set(t.id, card);
     return card;
   }
   function verdictCard(impact) {
@@ -1071,7 +1349,7 @@
         el(
           "div",
           { class: "chips" },
-          ...SEVERITIES.map((s) => [s, impact.nodes.filter((n) => n.severity === s).length]).filter(([, n]) => n > 0).map(([s, n]) => chip(s, `${n} · ${SEVERITY_LABEL[s]}`))
+          ...SEVERITIES.map((s2) => [s2, impact.nodes.filter((n) => n.severity === s2).length]).filter(([, n]) => n > 0).map(([s2, n]) => chip(s2, `${n} · ${SEVERITY_LABEL[s2]}`))
         )
       ),
       actions
