@@ -59,7 +59,8 @@ export const FOCUS_KEY = 'focus';
 
 export async function handOver(ref: Ref): Promise<void> {
     await k8sdockside.storage?.set(FOCUS_KEY, ref).catch(() => null);
-    await k8sdockside.openView('radius');
+    // The blast radius is the plugin's overview: the page it opens on.
+    await k8sdockside.openView('overview');
 }
 
 export async function takeHandOver(): Promise<Ref | null> {

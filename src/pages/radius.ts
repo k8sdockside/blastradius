@@ -12,7 +12,9 @@ import {
     hotspots,
     type GraphNode,
     type Impact,
+    type Severity,
 } from '../model/impact';
+import { RINGS, SURVEY_KINDS, consequences, radarLayout, stats, type Dot } from '../model/overview';
 import { LOGO, chip, clearError, kindTag, open, readHash, refLabel, showError, takeHandOver, when, writeHash } from '../ui/common';
 import { loadSnapshot } from '../ui/load';
 
@@ -23,6 +25,10 @@ let pickKind: string = 'nodes';
 let pickNs = '';
 let stopResize: (() => void) | null = null;
 let showQuiet = false;
+/** Every ranked target of the current snapshot, worked out once per read. */
+let survey: Impact[] | null = null;
+/** The overview's kind filter; '' for all. */
+let hotKind = '';
 
 const kindSel = byId<HTMLSelectElement>('kind');
 const nsSel = byId<HTMLSelectElement>('namespace');
@@ -77,6 +83,7 @@ async function refresh(): Promise<void> {
         const loaded = await loadSnapshot();
         snap = loaded.snap;
         index = new Index(snap);
+        survey = null;
         clearError();
         const missing = byId('missing');
         missing.hidden = !loaded.missing.length;
@@ -139,34 +146,212 @@ function render(): void {
     replace(main, verdictCard(full), quiet ? toggle : null, graph(shown), notes(full), table(shown));
 }
 
-// ----- hotspots -------------------------------------------------------------------------------
+// ----- the overview: where it would hurt most ----------------------------------------------------
+
+const SVGNS = 'http://www.w3.org/2000/svg';
+
+/** An SVG element. Cluster data only ever goes in as text, through `.textContent`. */
+function s<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number> = {}, text?: string): SVGElementTagNameMap[K] {
+    const node = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+    if (text !== undefined) node.textContent = text;
+    return node;
+}
+
+/** The radar is drawn in a box of ±R around the centre, plus room for the sector labels. */
+const R = 100;
 
 function renderHotspots(): void {
-    const top = hotspots(snap!, 12);
-    replace(
-        main,
-        el('section', { class: 'intro' },
-            el('h2', {}, 'Where it would hurt most'),
-            el('p', { class: 'dim' }, 'Every node, claim, ConfigMap, Secret, Service and StorageClass, imagined gone one at a time, ranked by what would break. Pick one to see the whole blast, or choose any object above.'),
-        ),
-        top.length
-            ? el('div', { class: 'hot-grid' }, ...top.map(hotCard))
-            : el('p', { class: 'empty' }, 'Nothing here would take anything else down with it.'),
+    survey ??= hotspots(snap!, Infinity);
+    const all = survey;
+    if (hotKind && !all.some((i) => i.target.ref.kind === hotKind)) hotKind = '';
+    const st = stats(all);
+    const radar = radarLayout(all);
+    const shown = all.filter((i) => !hotKind || i.target.ref.kind === hotKind).slice(0, 24);
+
+    const dots = new Map<string, SVGGElement>();
+    const cards = new Map<string, HTMLElement>();
+    const byTarget = new Map(all.map((i) => [i.target.id, i]));
+    const readout = el('div', { class: 'readout' });
+    const idleReadout = (): void =>
+        replace(readout,
+            el('div', { class: 'readout-title' }, all.length ? 'Pick a dot' : 'All clear'),
+            el('div', { class: 'dim small' }, all.length
+                ? 'Each dot is one object imagined gone. The nearer the bullseye and the bigger, the more breaks with it.'
+                : 'No single node, claim, ConfigMap, Secret, Service or StorageClass takes anything down with it.'),
+        );
+    const focus = (id: string | null): void => {
+        for (const [key, g] of dots) g.classList.toggle('lit', key === id);
+        for (const [key, c] of cards) c.classList.toggle('lit', key === id);
+        radarBox.classList.toggle('focusing', id !== null && dots.has(id));
+        const impact = id ? byTarget.get(id) : undefined;
+        if (!impact) return idleReadout();
+        const c = consequences(impact);
+        replace(readout,
+            el('div', { class: 'readout-head' }, kindTag(impact.target.ref.kind), el('span', { class: `score sev-${impact.verdict.severity ?? 'info'}` }, `impact ${impact.score}`)),
+            el('div', { class: 'readout-title' }, refLabel(impact.target.ref)),
+            el('div', { class: 'dim small' }, impact.verdict.text),
+            severityBar(c),
+            el('div', { class: 'faint small' }, 'Click to see the whole blast'),
+        );
+    };
+
+    // --- the radar
+    const chart = s('svg', { viewBox: `${-R * 1.66} ${-R * 1.22} ${R * 3.32} ${R * 2.44}`, class: 'radar', role: 'img' });
+    chart.append(s('title', {}, `Radar of ${all.length} objects whose loss would break something`));
+    for (const ring of [...RINGS].reverse()) {
+        chart.append(s('circle', { r: ring.outer * R, class: `ring sev-${ring.severity}` }));
+    }
+    chart.append(s('circle', { r: RINGS[0]!.inner * R, class: 'bullseye' }));
+    for (const sector of radar.sectors) {
+        for (const a of sector === radar.sectors.at(-1) ? [sector.start, sector.end] : [sector.start]) {
+            const edge = polar(a, R * 0.98);
+            chart.append(s('line', { x1: 0, y1: 0, x2: edge.x, y2: edge.y, class: 'spoke' }));
+        }
+        const mid = (sector.start + sector.end) / 2;
+        const at = polar(mid, R * 1.1);
+        const anchor = Math.abs(at.x) < R * 0.2 ? 'middle' : at.x > 0 ? 'start' : 'end';
+        const label = s('text', { x: at.x, y: at.y, 'text-anchor': anchor, 'dominant-baseline': 'middle', class: `sector-label${hotKind === sector.kind ? ' on' : ''}` }, `${kindLabel(sector.kind)} · ${sector.count}`);
+        label.addEventListener('click', () => setHotKind(hotKind === sector.kind ? '' : sector.kind));
+        chart.append(label);
+    }
+    for (const ring of RINGS) {
+        chart.append(s('text', { x: 0, y: -ring.outer * R + 6.5, 'text-anchor': 'middle', class: 'ring-label' }, SEVERITY_LABEL[ring.severity]));
+    }
+    for (const dot of radar.dots) chart.append(dotMark(dot, dots, focus));
+    if (!all.length) {
+        chart.classList.add('clear');
+        chart.append(s('path', { d: 'M-9,0 L-3,6 L9,-6', class: 'all-clear' }));
+    }
+
+    const radarBox = el('div', { class: 'radar-box' }, el('div', { class: 'sweep', 'aria-hidden': 'true' }));
+    radarBox.append(chart);
+    radarBox.addEventListener('mouseleave', () => focus(null));
+
+    // --- the headline numbers
+    const tiles = el('div', { class: 'tiles' },
+        tile(st.spof, 'Single points of failure', 'objects whose loss takes a workload, Service or entry point fully down'),
+        tile(st.workloadsAtRisk, 'Workloads exposed', 'go down or cannot come back after one loss'),
+        tile(st.servicesAtRisk, 'Services exposed', 'left with no endpoints after one loss'),
+        tile(st.entriesAtRisk, 'Entry points exposed', 'Ingresses and HTTPRoutes that stop answering'),
+    );
+
+    const legend = el('div', { class: 'legend' },
+        el('div', { class: 'faint small legend-title' }, `${all.length} ${all.length === 1 ? 'object' : 'objects'} would break something · worst loss`),
+        severityBar(st.bySeverity, true),
+        el('div', { class: 'chips' }, ...SEVERITIES.filter((sv) => sv !== 'info' && st.bySeverity[sv] > 0).map((sv) => chip(sv, `${st.bySeverity[sv]} · ${SEVERITY_LABEL[sv]}`))),
+    );
+
+    const steps = el('ol', { class: 'steps small' },
+        el('li', {}, el('b', {}, 'Pick'), ' a dot, a card, or any object in the pickers above'),
+        el('li', {}, el('b', {}, 'See'), ' what breaks, from the object to the front door'),
+        el('li', {}, el('b', {}, 'Follow'), ' the chain: anything it reaches can be the next target'),
+    );
+
+    idleReadout();
+    const hero = el('section', { class: 'hero' },
+        el('div', { class: 'hero-radar' }, radarBox, readout, radar.hidden ? el('div', { class: 'faint small' }, `${radar.hidden} smaller ones are left off the radar.`) : null),
+        el('div', { class: 'hero-side' },
+            el('div', {}, el('h2', {}, 'Where it would hurt most'), el('p', { class: 'dim intro-text' }, 'Every node, claim, ConfigMap, Secret, Service and StorageClass, imagined gone one at a time.')),
+            tiles, all.length ? legend : null, steps),
+    );
+
+    // --- the ranked list
+    const counts = new Map<string, number>();
+    for (const i of all) counts.set(i.target.ref.kind, (counts.get(i.target.ref.kind) ?? 0) + 1);
+    const filter = el('div', { class: 'filter' },
+        filterChip('', `All · ${all.length}`),
+        ...SURVEY_KINDS.filter((k) => counts.has(k)).map((k) => filterChip(k, `${kindLabel(k)} · ${counts.get(k)}`)),
+    );
+    const max = Math.max(1, ...all.map((i) => i.score));
+    const list = all.length
+        ? el('section', { class: 'ranked' },
+            el('div', { class: 'ranked-head' }, el('h3', {}, 'Ranked by impact'), filter),
+            el('div', { class: 'hot-grid' }, ...shown.map((impact) => hotCard(impact, all.indexOf(impact) + 1, max, cards, focus))),
+          )
+        : null;
+
+    replace(main, hero, list);
+}
+
+function setHotKind(kind: string): void {
+    hotKind = kind;
+    renderHotspots();
+}
+
+function filterChip(kind: string, text: string): HTMLElement {
+    const b = button(text, () => setHotKind(kind), { class: `pill${hotKind === kind ? ' on' : ''}` });
+    b.setAttribute('aria-pressed', String(hotKind === kind));
+    return b;
+}
+
+function polar(angle: number, radius: number): { x: number; y: number } {
+    return { x: Math.sin(angle) * radius, y: -Math.cos(angle) * radius };
+}
+
+function dotMark(dot: Dot, dots: Map<string, SVGGElement>, focus: (id: string | null) => void): SVGGElement {
+    const g = s('g', { class: `dot sev-${dot.severity}`, tabindex: 0, role: 'button', transform: `translate(${(dot.x * R).toFixed(2)},${(dot.y * R).toFixed(2)})` });
+    g.setAttribute('aria-label', `${kindLabel(dot.ref.kind)} ${refLabel(dot.ref)}, impact ${dot.score}`);
+    g.append(s('title', {}, `${kindLabel(dot.ref.kind)} ${refLabel(dot.ref)} · impact ${dot.score}`));
+    const r = dot.size * R;
+    g.append(s('circle', { r: r * 1.9, class: 'halo' }), s('circle', { r, class: 'core' }));
+    g.addEventListener('mouseenter', () => focus(dot.id));
+    g.addEventListener('focus', () => focus(dot.id));
+    g.addEventListener('click', () => pick(dot.ref));
+    g.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            pick(dot.ref);
+        }
+    });
+    dots.set(dot.id, g);
+    return g;
+}
+
+function tile(n: number, label: string, hint: string): HTMLElement {
+    return el('div', { class: `tile ${n ? 'bad' : 'good'}` },
+        el('div', { class: 'tile-n' }, String(n)),
+        el('div', { class: 'tile-label' }, label),
+        el('div', { class: 'faint small' }, n ? hint : 'none — nice'),
     );
 }
 
-function hotCard(impact: Impact): HTMLElement {
+/** A bar split by severity, worst first. */
+function severityBar(counts: Record<Severity, number>, tall = false): HTMLElement {
+    const parts = SEVERITIES.filter((sv) => sv !== 'info' && counts[sv] > 0);
+    const bar = el('div', { class: `sevbar${tall ? ' tall' : ''}` });
+    for (const sv of parts) {
+        const seg = el('span', { class: `sev-${sv}`, title: `${counts[sv]} · ${SEVERITY_LABEL[sv]}` });
+        seg.style.flexGrow = String(counts[sv]);
+        bar.append(seg);
+    }
+    if (!parts.length) bar.append(el('span', { class: 'sev-info' }));
+    return bar;
+}
+
+function hotCard(impact: Impact, rank: number, max: number, cards: Map<string, HTMLElement>, focus: (id: string | null) => void): HTMLElement {
     const t = impact.target;
-    const counts = SEVERITIES.filter((s) => s !== 'info')
-        .map((s) => [s, impact.nodes.filter((n) => n.severity === s && n.column >= 2).length] as const)
-        .filter(([, n]) => n > 0);
+    const c = consequences(impact);
+    const counts = SEVERITIES.filter((sv) => sv !== 'info' && c[sv] > 0);
+    const meter = el('div', { class: 'meter', title: 'How much would break, weighted by how badly' }, el('span', {}));
+    (meter.firstChild as HTMLElement).style.width = `${Math.max(4, (impact.score / max) * 100)}%`;
     const card = el('button', { type: 'button', class: `hot sev-${impact.verdict.severity ?? 'info'}` },
-        el('div', { class: 'hot-head' }, kindTag(t.ref.kind), el('span', { class: 'score', title: 'How much would break, weighted by how badly' }, String(impact.score))),
+        el('div', { class: 'hot-head' },
+            el('span', { class: 'rank' }, `#${rank}`),
+            kindTag(t.ref.kind),
+            el('span', { class: 'grow' }),
+            el('span', { class: 'score', title: 'How much would break, weighted by how badly' }, String(impact.score)),
+        ),
         el('div', { class: 'hot-name' }, refLabel(t.ref)),
+        meter,
         el('div', { class: 'hot-text dim' }, impact.verdict.text),
-        el('div', { class: 'chips' }, ...counts.map(([s, n]) => chip(s, `${n} · ${SEVERITY_LABEL[s]}`))),
+        counts.length ? severityBar(c) : null,
+        el('div', { class: 'chips' }, ...counts.map((sv) => chip(sv, `${c[sv]} · ${SEVERITY_LABEL[sv]}`))),
     );
     card.addEventListener('click', () => pick(t.ref));
+    card.addEventListener('mouseenter', () => focus(t.id));
+    card.addEventListener('mouseleave', () => focus(null));
+    cards.set(t.id, card);
     return card;
 }
 

@@ -776,7 +776,7 @@
   var FOCUS_KEY = "focus";
   async function handOver(ref) {
     await k8sdockside.storage?.set(FOCUS_KEY, ref).catch(() => null);
-    await k8sdockside.openView("radius");
+    await k8sdockside.openView("overview");
   }
   function chip(severity, text = SEVERITY_LABEL[severity]) {
     return el("span", { class: `chip sev-${severity}` }, text);

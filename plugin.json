@@ -10,7 +10,7 @@
     "logo": "logo.svg",
     "author": "K8s Dockside",
     "links": [{ "label": "Source", "url": "https://github.com/k8sdockside/blastradius" }],
-    "description": "Pick a node, a volume, a ConfigMap, a Secret, a Service, a ServiceAccount or a workload, and see everything that fails if it goes away: which workloads go down, lose replicas, cannot come back or break the next time they restart, which Services lose their endpoints, and which Ingresses and HTTPRoutes stop answering. Drawn as a graph from the object to the front door.\n\nStart with Blast radius: with nothing picked it ranks every node, claim, ConfigMap, Secret, Service and StorageClass by how much would break without it. Nodes, claims, volumes, classes, ConfigMaps, Services, ServiceAccounts and workloads also get a Blast radius panel in their detail view.\n\nIt works on any cluster and only reads. Secrets are never read: their names come from the pods and Ingresses that use them.",
+    "description": "Pick a node, a volume, a ConfigMap, a Secret, a Service, a ServiceAccount or a workload, and see everything that fails if it goes away: which workloads go down, lose replicas, cannot come back or break the next time they restart, which Services lose their endpoints, and which Ingresses and HTTPRoutes stop answering. Drawn as a graph from the object to the front door.\n\nOpen the plugin and it starts on the blast radius: with nothing picked it ranks every node, claim, ConfigMap, Secret, Service and StorageClass by how much would break without it. Nodes, claims, volumes, classes, ConfigMaps, Services, ServiceAccounts and workloads also get a Blast radius panel in their detail view.\n\nIt works on any cluster and only reads. Secrets are never read: their names come from the pods and Ingresses that use them.",
     "requires": [
         { "kind": "pods", "label": "Pods" },
         { "kind": "nodes", "label": "Nodes" }
@@ -34,7 +34,7 @@
             "crd:httproutes.gateway.networking.k8s.io"
         ]
     },
-    "views": [{ "id": "radius", "label": "Blast radius", "icon": "graph", "type": "custom", "entry": "radius.html" }],
+    "overview": { "entry": "radius.html" },
     "cards": [
         {
             "label": "Pods",
